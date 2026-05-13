@@ -1,0 +1,861 @@
+!nvidia-smi
+%%writefile file.cu
+!nvcc file.cu -o out
+!./out
+
+
+
+
+
+#include <iostream>
+#include <cuda_runtime.h>
+#include <ctime>
+
+using namespace std;
+
+__global__ void vectorAddCUDA(int *a, int *b, int *c, int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n)
+        c[idx] = a[idx] + b[idx];
+}
+
+void vectorAddCPU(int *a, int *b, int *c, int n)
+{
+    for (int i = 0; i < n; i++)
+        c[i] = a[i] + b[i];
+}
+
+__global__ void matrixMulCUDA(int *a, int *b, int *c, int N)
+{
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < N && col < N)
+    {
+        int sum = 0;
+        for (int k = 0; k < N; k++)
+            sum += a[row * N + k] * b[k * N + col];
+        c[row * N + col] = sum;
+    }
+}
+
+void matrixMulCPU(int *a, int *b, int *c, int N)
+{
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++)
+        {
+            int sum = 0;
+            for (int k = 0; k < N; k++)
+                sum += a[i * N + k] * b[k * N + j];
+            c[i * N + j] = sum;
+        }
+}
+
+int main()
+{
+    int vecSize = 1 << 20;
+    int matrixSize = 512;
+
+    // cout << "Enter vector size: ";
+    // cin >> vecSize;
+    // cout << "Enter matrix size (N for NxN): ";
+    // cin >> matrixSize;
+
+    int *h_a = new int[vecSize];
+    int *h_b = new int[vecSize];
+    int *h_c_cpu = new int[vecSize];
+    int *h_c_gpu = new int[vecSize];
+
+    for (int i = 0; i < vecSize; i++)
+    {
+        h_a[i] = rand() % 100;
+        h_b[i] = rand() % 100;
+    }
+
+    // cout << "Enter vector A:\n";
+    // for (int i = 0; i < vecSize; i++)
+    //     cin >> h_a[i];
+    // cout << "Enter vector B:\n";
+    // for (int i = 0; i < vecSize; i++)
+    //     cin >> h_b[i];
+
+    clock_t start = clock();
+    vectorAddCPU(h_a, h_b, h_c_cpu, vecSize);
+    clock_t end = clock();
+
+    cout << "[Vector CPU Time] "
+         << (double)(end - start) * 1000 / CLOCKS_PER_SEC << " ms\n";
+
+    int *d_a, *d_b, *d_c;
+    cudaMalloc(&d_a, vecSize * sizeof(int));
+    cudaMalloc(&d_b, vecSize * sizeof(int));
+    cudaMalloc(&d_c, vecSize * sizeof(int));
+
+    cudaMemcpy(d_a, h_a, vecSize * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, vecSize * sizeof(int), cudaMemcpyHostToDevice);
+
+    cudaEvent_t startEvent, stopEvent;
+    cudaEventCreate(&startEvent);
+    cudaEventCreate(&stopEvent);
+
+    cudaEventRecord(startEvent);
+
+    vectorAddCUDA<<<(vecSize + 255) / 256, 256>>>(d_a, d_b, d_c, vecSize);
+
+    cudaEventRecord(stopEvent);
+    cudaEventSynchronize(stopEvent);
+
+    float gpuTime = 0;
+    cudaEventElapsedTime(&gpuTime, startEvent, stopEvent);
+
+    cudaMemcpy(h_c_gpu, d_c, vecSize * sizeof(int), cudaMemcpyDeviceToHost);
+
+    cout << "[Vector GPU Time] " << gpuTime << " ms\n\n";
+
+    // cout << "Vector Result:\n";
+    // for (int i = 0; i < vecSize; i++)
+    //     cout << h_c_gpu[i] << " ";
+    // cout << "\n\n";
+
+    int N = matrixSize;
+    int size = N * N;
+
+    int *matA = new int[size];
+    int *matB = new int[size];
+    int *matC_cpu = new int[size];
+    int *matC_gpu = new int[size];
+
+    for (int i = 0; i < size; i++)
+    {
+        matA[i] = rand() % 10;
+        matB[i] = rand() % 10;
+    }
+
+    // cout << "Enter Matrix A:\n";
+    // for (int i = 0; i < size; i++)
+    //     cin >> matA[i];
+    // cout << "Enter Matrix B:\n";
+    // for (int i = 0; i < size; i++)
+    //     cin >> matB[i];
+
+    start = clock();
+    matrixMulCPU(matA, matB, matC_cpu, N);
+    end = clock();
+
+    cout << "[Matrix CPU Time] "
+         << (double)(end - start) * 1000 / CLOCKS_PER_SEC << " ms\n";
+
+    int *d_A, *d_B, *d_C;
+    size_t bytes = size * sizeof(int);
+
+    cudaMalloc(&d_A, bytes);
+    cudaMalloc(&d_B, bytes);
+    cudaMalloc(&d_C, bytes);
+
+    cudaMemcpy(d_A, matA, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, matB, bytes, cudaMemcpyHostToDevice);
+
+    dim3 threads(16, 16);
+    dim3 blocks((N + 15) / 16, (N + 15) / 16);
+
+    cudaEventRecord(startEvent);
+
+    matrixMulCUDA<<<blocks, threads>>>(d_A, d_B, d_C, N);
+
+    cudaEventRecord(stopEvent);
+    cudaEventSynchronize(stopEvent);
+
+    cudaEventElapsedTime(&gpuTime, startEvent, stopEvent);
+
+    cudaMemcpy(matC_gpu, d_C, bytes, cudaMemcpyDeviceToHost);
+
+    cout << "[Matrix GPU Time] " << gpuTime << " ms\n";
+
+    // cout << "Matrix Result:\n";
+    // for (int i = 0; i < N; i++)
+    // {
+    //     for (int j = 0; j < N; j++)
+    //         cout << matC_gpu[i * N + j] << " ";
+    //     cout << "\n";
+    // }
+
+    delete[] h_a;
+    delete[] h_b;
+    delete[] h_c_cpu;
+    delete[] h_c_gpu;
+    delete[] matA;
+    delete[] matB;
+    delete[] matC_cpu;
+    delete[] matC_gpu;
+
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_c);
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C);
+
+    return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# CUDA Practical Theory (Vector Addition + Matrix Multiplication)
+
+# 1. Aim of the Program
+
+The aim of this program is to implement:
+
+1. Vector Addition using CUDA
+2. Matrix Multiplication using CUDA
+
+and compare:
+
+* CPU execution time
+* GPU execution time
+
+to demonstrate parallel computing using GPU.
+
+---
+
+# 2. What is CUDA?
+
+CUDA (Compute Unified Device Architecture) is NVIDIA’s parallel computing platform and programming model.
+
+It allows programmers to:
+
+* use GPU for general-purpose computing
+* execute thousands of threads in parallel
+* accelerate computation-heavy tasks
+
+CUDA programs are written in:
+
+* C/C++
+* with CUDA extensions
+
+---
+
+# 3. Why Use GPU Instead of CPU?
+
+## CPU
+
+* few powerful cores
+* optimized for sequential tasks
+
+## GPU
+
+* thousands of smaller cores
+* optimized for parallel tasks
+
+Operations like:
+
+* vector addition
+* matrix multiplication
+  can be divided into many independent computations.
+
+Hence GPU performs them faster for large datasets.
+
+---
+
+# 4. Parallel Computing Concept
+
+Parallel computing means:
+multiple operations execute simultaneously.
+
+Example:
+For vector addition:
+
+```text id="p8m2qp"
+C[i] = A[i] + B[i]
+```
+
+Each element addition is independent.
+
+So:
+
+* one GPU thread handles one element.
+
+---
+
+# 5. CUDA Execution Model
+
+CUDA organizes execution into:
+
+## Thread
+
+Smallest execution unit.
+
+## Block
+
+Group of threads.
+
+## Grid
+
+Collection of blocks.
+
+Hierarchy:
+
+```text id="q4x8rm"
+Grid
+ └── Blocks
+      └── Threads
+```
+
+---
+
+# 6. CUDA Memory Model
+
+## Host Memory
+
+CPU memory.
+
+Variables:
+
+```cpp id="t7m3qp"
+h_a, h_b
+```
+
+---
+
+## Device Memory
+
+GPU memory.
+
+Variables:
+
+```cpp id="d3x9tp"
+d_a, d_b
+```
+
+Data must be copied:
+
+* CPU → GPU
+* GPU → CPU
+
+using `cudaMemcpy()`.
+
+---
+
+# 7. Kernel Function
+
+Kernel = function executed on GPU.
+
+Defined using:
+
+```cpp id="n8m2wp"
+__global__
+```
+
+Example:
+
+```cpp id="h5x7qp"
+__global__ void vectorAddCUDA(...)
+```
+
+Called from CPU,
+executed on GPU.
+
+---
+
+# 8. Vector Addition Theory
+
+We add two vectors:
+
+```text id="m2x8rp"
+C[i] = A[i] + B[i]
+```
+
+Each thread computes:
+
+```text id="k7m4qp"
+one element
+```
+
+This is highly parallelizable.
+
+---
+
+# 9. Matrix Multiplication Theory
+
+Matrix multiplication:
+
+```text id="r4x8tm"
+C[i][j] = Σ A[i][k] × B[k][j]
+```
+
+Each output cell is independent.
+
+So:
+
+* one GPU thread computes one matrix element.
+
+---
+
+# 10. Why GPU Faster?
+
+GPU performs:
+
+* many computations simultaneously
+
+CPU performs:
+
+* computations sequentially
+
+For large inputs:
+GPU significantly reduces execution time.
+
+---
+
+# 11. Important CUDA Functions Used
+
+---
+
+# cudaMalloc()
+
+## Purpose
+
+Allocates memory on GPU.
+
+## Syntax
+
+```cpp id="c8m2rp"
+cudaMalloc(&pointer, size);
+```
+
+Example:
+
+```cpp id="v3m7tp"
+cudaMalloc(&d_a, vecSize * sizeof(int));
+```
+
+Allocates GPU memory for vector.
+
+---
+
+# cudaMemcpy()
+
+## Purpose
+
+Transfers data between CPU and GPU.
+
+## Syntax
+
+```cpp id="x7m2qp"
+cudaMemcpy(destination, source, size, direction);
+```
+
+Directions:
+
+* `cudaMemcpyHostToDevice`
+* `cudaMemcpyDeviceToHost`
+
+Example:
+
+```cpp id="f4x9wm"
+cudaMemcpy(d_a, h_a, size, cudaMemcpyHostToDevice);
+```
+
+---
+
+# cudaFree()
+
+## Purpose
+
+Frees GPU memory.
+
+Example:
+
+```cpp id="p6m2tp"
+cudaFree(d_a);
+```
+
+Prevents memory leaks.
+
+---
+
+# cudaDeviceSynchronize()
+
+## Purpose
+
+Waits until GPU completes execution.
+
+Used after kernel launch for:
+
+* accurate timing
+* synchronization
+
+---
+
+# cudaEvent_t
+
+## Purpose
+
+Measures GPU execution time accurately.
+
+Because:
+normal `clock()` cannot correctly measure GPU kernels.
+
+---
+
+# 12. Thread Index Calculation
+
+## Vector Addition
+
+```cpp id="u8m4qp"
+int idx = blockIdx.x * blockDim.x + threadIdx.x;
+```
+
+Calculates unique global thread index.
+
+---
+
+# Components
+
+## blockIdx.x
+
+Current block number.
+
+## blockDim.x
+
+Threads per block.
+
+## threadIdx.x
+
+Thread number inside block.
+
+---
+
+# Example
+
+Suppose:
+
+```text id="y5x2rm"
+blockDim.x = 256
+blockIdx.x = 2
+threadIdx.x = 5
+```
+
+Then:
+
+```text id="g8m3qp"
+idx = 2 * 256 + 5 = 517
+```
+
+This thread handles:
+
+```text id="r7m2wp"
+element 517
+```
+
+---
+
+# 13. Boundary Check
+
+```cpp id="m4x8tp"
+if (idx < n)
+```
+
+Why needed?
+
+* sometimes extra threads are launched
+* prevents invalid memory access
+
+Very important in CUDA.
+
+---
+
+# 14. Kernel Launch Syntax
+
+```cpp id="d8m2qp"
+kernel<<<blocks, threads>>>(arguments);
+```
+
+Example:
+
+```cpp id="w5m7rp"
+vectorAddCUDA<<<(n+255)/256, 256>>>(...);
+```
+
+Meaning:
+
+* 256 threads per block
+* enough blocks to cover all elements
+
+---
+
+# 15. dim3
+
+Used for 2D thread organization.
+
+Example:
+
+```cpp id="x3m9tp"
+dim3 threads(16,16);
+dim3 blocks((N+15)/16, (N+15)/16);
+```
+
+Useful for:
+
+* matrix operations
+* image processing
+
+---
+
+# 16. CPU Timing vs GPU Timing
+
+## CPU Timing
+
+Using:
+
+```cpp id="f7x2qp"
+clock()
+```
+
+---
+
+## GPU Timing
+
+Using:
+
+* cudaEventRecord()
+* cudaEventElapsedTime()
+
+because GPU executes asynchronously.
+
+---
+
+# 17. Why Large Inputs Used?
+
+GPU overhead includes:
+
+* kernel launch
+* memory transfer
+
+For small inputs:
+CPU may appear faster.
+
+For large inputs:
+GPU shows advantage.
+
+---
+
+# 18. Complexity
+
+## Vector Addition
+
+Time Complexity:
+
+```text id="u2m8rp"
+O(n)
+```
+
+---
+
+## Matrix Multiplication
+
+Time Complexity:
+
+```text id="h6x4qp"
+O(N³)
+```
+
+---
+
+# 19. Important Examiner Questions
+
+# Q1. Why use CUDA?
+
+To perform parallel computation using GPU and improve performance.
+
+---
+
+# Q2. Difference between CPU and GPU?
+
+CPU:
+
+* few powerful cores
+* sequential processing
+
+GPU:
+
+* many lightweight cores
+* parallel processing
+
+---
+
+# Q3. Why matrix multiplication suitable for parallelism?
+
+Each output element can be computed independently.
+
+---
+
+# Q4. What is kernel?
+
+Function executed on GPU.
+
+---
+
+# Q5. What is **global**?
+
+Specifies GPU kernel function callable from CPU.
+
+---
+
+# Q6. Why cudaMemcpy needed?
+
+CPU and GPU have separate memory spaces.
+
+---
+
+# Q7. Why boundary checks required?
+
+To avoid invalid memory access from extra threads.
+
+---
+
+# Q8. Why GPU sometimes slower?
+
+Due to:
+
+* memory transfer overhead
+* kernel launch overhead
+
+for small inputs.
+
+---
+
+# Q9. Why use dim3 in matrix multiplication?
+
+Because matrices are 2-dimensional.
+
+---
+
+# Q10. Why cudaFree required?
+
+To release GPU memory and avoid memory leaks.
+
+---
+
+# 20. Changes Examiner May Ask
+
+# 1. Take User Input
+
+Instead of random initialization:
+
+```cpp id="z4m8qp"
+cin >> h_a[i];
+```
+
+---
+
+# 2. Print Result Vectors/Matrices
+
+May ask to display outputs.
+
+You already have commented print statements.
+
+---
+
+# 3. Change Matrix Size
+
+Example:
+
+```text id="j7x2tm"
+256 → 512
+```
+
+---
+
+# 4. Change Threads Per Block
+
+Example:
+
+```cpp id="v8m3qp"
+128
+256
+512
+```
+
+and observe performance.
+
+---
+
+# 5. Use Float Instead of Int
+
+Can replace:
+
+```cpp id="p5m7rp"
+int
+```
+
+with:
+
+```cpp id="t2x8qp"
+float
+```
+
+---
+
+# 6. Explain 1D vs 2D Grid
+
+Vector:
+
+* 1D threads
+
+Matrix:
+
+* 2D threads
+
+---
+
+# 7. Compare CPU and GPU Results
+
+May ask:
+
+* verify outputs are same
+
+Can add checking loop.
+
+---
+
+# 8. Explain Memory Transfer Overhead
+
+Very common viva question.
+
+---
+
+# 21. Final One-Line Summary
+
+This CUDA program demonstrates GPU-based parallel execution for vector addition and matrix multiplication using CUDA kernels and compares GPU performance with traditional CPU execution.
